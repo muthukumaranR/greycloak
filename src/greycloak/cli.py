@@ -1,0 +1,176 @@
+"""greycloak command-line interface.
+
+Examples::
+
+    # List what ships
+    greycloak risks
+    greycloak strategies
+
+    # Red-team a hosted target defined by a system prompt + model
+    greycloak run --name triage-bot --domain "clinic scheduling" \\
+        --system-prompt-file prompt.txt --target-model openai/gpt-4o-mini \\
+        --attacker-model openai/gpt-4o-mini --judge-model openai/gpt-4o-mini \\
+        --out report.json --markdown
+
+    # Run the whole thing from a YAML campaign file
+    greycloak run --config campaign.yaml
+
+    # Launch the API + web dashboard
+    greycloak serve
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import typer
+import yaml
+from loguru import logger
+
+import uuid
+
+from .engine import ProgressEvent, run_campaign
+from .models import AgentSpec, CampaignConfig, LMConfig, RunRecord, RunStatus
+from .report import to_markdown
+from .risks import GENERIC_RISKS, domain_risks, load_custom_risks
+from .store import default_store
+from .strategies import DEFAULT_STRATEGIES
+
+app = typer.Typer(help="DSPy + Pydantic red-teaming for LLM agents.", no_args_is_help=True)
+
+
+def _progress(ev: ProgressEvent) -> None:
+    if ev.total:
+        typer.echo(f"[{ev.phase} {ev.done}/{ev.total}] {ev.message}", err=True)
+    else:
+        typer.echo(f"[{ev.phase}] {ev.message}", err=True)
+
+
+@app.command()
+def risks(domain: str = typer.Option("your domain", help="Domain for domain risks.")):
+    """List the built-in generic and domain risks."""
+    typer.echo("GENERIC RISKS")
+    for r in GENERIC_RISKS:
+        typer.echo(f"  {r.id:<24} [{r.severity.value}] {r.name}")
+    typer.echo(f"\nDOMAIN RISKS (specialized to: {domain!r})")
+    for r in domain_risks(domain):
+        typer.echo(f"  {r.id:<24} [{r.severity.value}] {r.name}")
+
+
+@app.command()
+def strategies():
+    """List the built-in attack strategies."""
+    for s in DEFAULT_STRATEGIES:
+        tag = " (multi-turn)" if s.multi_turn else ""
+        typer.echo(f"  {s.id:<14} {s.name}{tag}\n      {s.description}")
+
+
+@app.command()
+def run(
+    config: Path = typer.Option(None, help="YAML campaign config (overrides flags)."),
+    name: str = typer.Option("agent-under-test", help="Agent name."),
+    system_prompt: str = typer.Option(None, help="Agent system prompt text."),
+    system_prompt_file: Path = typer.Option(None, help="File with the system prompt."),
+    domain: str = typer.Option(None, help="Agent domain (drives domain risks)."),
+    risk_ids: str = typer.Option("", "--risks", help="Comma-separated risk ids."),
+    strategy_ids: str = typer.Option("", "--strategies", help="Comma-separated strat ids."),
+    attacks_per_pair: int = typer.Option(2, help="Attacks per risk x strategy."),
+    custom_risks_file: Path = typer.Option(None, help="YAML of custom risks."),
+    attacker_model: str = typer.Option("openai/gpt-4o-mini"),
+    judge_model: str = typer.Option("openai/gpt-4o-mini"),
+    target_model: str = typer.Option("openai/gpt-4o-mini"),
+    api_base: str = typer.Option(None, help="api_base for all roles (e.g. Ollama)."),
+    max_concurrency: int = typer.Option(4),
+    out: Path = typer.Option(None, help="Write report JSON here."),
+    markdown: bool = typer.Option(False, help="Print a Markdown report to stdout."),
+):
+    """Run a red-team campaign against a hosted (config-only) target agent."""
+
+    if config is not None:
+        raw = yaml.safe_load(Path(config).read_text())
+        campaign = CampaignConfig(**raw)
+        custom = None
+    else:
+        prompt = system_prompt
+        if system_prompt_file is not None:
+            prompt = Path(system_prompt_file).read_text()
+        if not prompt:
+            typer.echo("Provide --system-prompt or --system-prompt-file", err=True)
+            raise typer.Exit(2)
+        campaign = CampaignConfig(
+            agent=AgentSpec(name=name, system_prompt=prompt, domain=domain),
+            risk_ids=[x for x in risk_ids.split(",") if x.strip()],
+            strategy_ids=[x for x in strategy_ids.split(",") if x.strip()],
+            attacks_per_pair=attacks_per_pair,
+            attacker_lm=LMConfig(model=attacker_model, api_base=api_base),
+            judge_lm=LMConfig(model=judge_model, api_base=api_base, temperature=0.0),
+            target_lm=LMConfig(model=target_model, api_base=api_base),
+            max_concurrency=max_concurrency,
+        )
+        custom = load_custom_risks(custom_risks_file) if custom_risks_file else None
+
+    logger.info("starting campaign against {}", campaign.agent.name)
+    report = run_campaign(campaign, custom_risks=custom, progress=_progress)
+
+    # Persist to the run store so `greycloak runs` / `show` can find it later.
+    run_id = uuid.uuid4().hex[:12]
+    default_store().save(RunRecord(
+        id=run_id, config=campaign, report=report, status=RunStatus.COMPLETED
+    ))
+
+    typer.echo(
+        f"\nASR: {report.attack_success_rate:.0%} "
+        f"({report.total_successes}/{report.total_attacks})  "
+        f"mean divergence: {report.mean_divergence:.2f}  (run {run_id})"
+    )
+    if out is not None:
+        Path(out).write_text(report.model_dump_json(indent=2))
+        typer.echo(f"report written to {out}")
+    if markdown:
+        typer.echo("\n" + to_markdown(report))
+
+
+@app.command()
+def runs():
+    """List persisted red-team runs (from $GREYCLOAK_RUNS_DIR, default ./runs)."""
+    records = default_store().list_records()
+    if not records:
+        typer.echo("no runs found")
+        return
+    for r in records:
+        asr = f"{r.report.attack_success_rate:.0%}" if r.report else "-"
+        typer.echo(f"  {r.id}  {r.status.value:<10} {r.config.agent.name:<24} ASR={asr}")
+
+
+@app.command()
+def show(run_id: str, markdown: bool = typer.Option(True, help="Render markdown.")):
+    """Show a persisted run's report."""
+    rec = default_store().load(run_id)
+    if rec is None:
+        typer.echo(f"run {run_id} not found", err=True)
+        raise typer.Exit(1)
+    if rec.report is None:
+        typer.echo(f"run {run_id} status={rec.status.value}, no report")
+        return
+    typer.echo(to_markdown(rec.report) if markdown else rec.report.model_dump_json(indent=2))
+
+
+@app.command()
+def serve(host: str = "127.0.0.1", port: int = 8000):
+    """Launch the FastAPI service + web dashboard."""
+    import uvicorn
+
+    uvicorn.run("greycloak.service:app", host=host, port=port, reload=False)
+
+
+def main() -> None:
+    try:
+        app()
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()
