@@ -404,6 +404,20 @@ class RedTeamReport(BaseModel):
     risk_scores: list[RiskScore] = Field(default_factory=list)
 
 
+class RunProvenance(BaseModel):
+    """Exact setup behind a run's numbers, for reproducibility."""
+
+    attacker_model: str = ""
+    judge_model: str = ""
+    report_judge_model: str = ""
+    target_model: str = ""
+    seed: int = 0
+    config_hash: str = ""
+    greycloak_version: str = ""
+    dspy_version: str = ""
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 class RunRecord(BaseModel):
     """A campaign run's full state -- what the service tracks and the store persists."""
 
@@ -412,6 +426,7 @@ class RunRecord(BaseModel):
     config: CampaignConfig
     progress: list[dict[str, Any]] = Field(default_factory=list)
     report: RedTeamReport | None = None
+    provenance: RunProvenance | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)

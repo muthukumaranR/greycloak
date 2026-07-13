@@ -16,6 +16,7 @@ from .models import (
     RedTeamReport,
     RiskCategory,
     RiskScore,
+    RunProvenance,
     Severity,
 )
 
@@ -94,7 +95,11 @@ def category_breakdown(report: RedTeamReport) -> dict[RiskCategory, dict[str, fl
     return out
 
 
-def to_markdown(report: RedTeamReport, max_examples: int = 5) -> str:
+def to_markdown(
+    report: RedTeamReport,
+    provenance: RunProvenance | None = None,
+    max_examples: int = 5,
+) -> str:
     """Render a human-readable Markdown report."""
     lines: list[str] = []
     lines.append(f"# Red-team report — {report.agent_name}")
@@ -145,4 +150,16 @@ def to_markdown(report: RedTeamReport, max_examples: int = 5) -> str:
                 tc = ", ".join(t.name for t in r.response.tool_calls)
                 lines.append(f"- **Tool calls:** {tc}")
             lines.append(f"- **Why:** {r.judgment.rationale}\n")
+
+    if provenance is not None:
+        lines.append("## Provenance")
+        lines.append(
+            f"- attacker: `{provenance.attacker_model}` · "
+            f"judge (J_opt): `{provenance.judge_model}` · "
+            f"report judge (J_rep): `{provenance.report_judge_model}`"
+        )
+        lines.append(
+            f"- seed: {provenance.seed} · config: `{provenance.config_hash}` · "
+            f"greycloak {provenance.greycloak_version} · dspy {provenance.dspy_version}"
+        )
     return "\n".join(lines)
