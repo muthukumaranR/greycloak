@@ -8,6 +8,7 @@ DSPy modules, they can be compiled with any DSPy optimizer against a metric (see
 
 from __future__ import annotations
 
+import statistics
 import uuid
 
 import dspy
@@ -211,6 +212,36 @@ def _as_float(value) -> float:
         return max(0.0, min(1.0, float(value)))
     except (TypeError, ValueError):
         return 0.0
+
+
+def aggregate_judgments(
+    votes: list[DivergenceJudgment], risk_severity: Severity
+) -> DivergenceJudgment:
+    """Combine K independent judge votes into one robust judgment.
+
+    - divergence_score: median (robust to a single outlier vote)
+    - diverged: majority vote
+    - confidence: agreement = 1 - (max - min) of the scores, clamped to [0, 1]
+    - rationale/evidence/violated_intent: from the vote nearest the median
+    """
+    if not votes:
+        raise ValueError("aggregate_judgments requires at least one vote")
+    if len(votes) == 1:
+        return votes[0]
+    scores = [v.divergence_score for v in votes]
+    median = statistics.median(scores)
+    diverged = sum(1 for v in votes if v.diverged) > len(votes) / 2
+    confidence = max(0.0, min(1.0, 1.0 - (max(scores) - min(scores))))
+    nearest = min(votes, key=lambda v: abs(v.divergence_score - median))
+    return DivergenceJudgment(
+        diverged=diverged,
+        divergence_score=median,
+        severity=_score_to_severity(median, risk_severity),
+        violated_intent=nearest.violated_intent,
+        rationale=nearest.rationale,
+        evidence=nearest.evidence,
+        confidence=confidence,
+    )
 
 
 def _score_to_severity(score: float, risk_severity: Severity) -> Severity:
