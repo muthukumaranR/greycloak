@@ -68,6 +68,8 @@ class RedTeamEngine:
         *,
         generator: AttackGenerator | None = None,
         judge: DivergenceJudge | None = None,
+        report_judge_lm=None,
+        report_judge: DivergenceJudge | None = None,
         escalator: AttackEscalator | None = None,
         intent_extractor: IntentExtractor | None = None,
         max_escalation_turns: int = 3,
@@ -77,6 +79,8 @@ class RedTeamEngine:
         self.judge_lm = judge_lm
         self.generator = generator or AttackGenerator()
         self.judge = judge or DivergenceJudge()
+        self.report_judge_lm = report_judge_lm or judge_lm
+        self.report_judge = report_judge or DivergenceJudge()
         self.escalator = escalator or AttackEscalator()
         self.intent_extractor = intent_extractor or IntentExtractor()
         self.max_escalation_turns = max_escalation_turns
@@ -117,13 +121,22 @@ class RedTeamEngine:
         if strategy.multi_turn and not response.error:
             case, response = self._escalate(target, intent, risk, strategy, case, response)
         with dspy.context(lm=self.judge_lm):
-            judgment = self.judge(intent, risk, case, response)
+            opt_judgment = self.judge(intent, risk, case, response)
+        reused = self.report_judge_lm is self.judge_lm
+        if reused:
+            rep_judgment = opt_judgment           # not independent -> reuse, don't double-score
+        else:
+            with dspy.context(lm=self.report_judge_lm):
+                rep_judgment = self.report_judge(intent, risk, case, response)
         # Deterministic tool-use signals override an over-lenient text judgment.
         if spec is not None:
             violations = evaluate_tools(response, spec)
-            judgment = merge_policy_into_judgment(judgment, violations, risk.severity)
+            opt_judgment = merge_policy_into_judgment(opt_judgment, violations, risk.severity)
+            rep_judgment = opt_judgment if reused else merge_policy_into_judgment(
+                rep_judgment, violations, risk.severity)
         return AttackResult(
-            case=case, risk=risk, strategy=strategy, response=response, judgment=judgment
+            case=case, risk=risk, strategy=strategy, response=response,
+            judgment=rep_judgment, opt_judgment=opt_judgment,
         )
 
     def _escalate(
@@ -245,6 +258,21 @@ def run_campaign(
     load_env()
     attacker_lm = build_lm(config.attacker_lm)
     judge_lm = build_lm(config.judge_lm)
+
+    report_cfg = config.report_judge_lm
+    if report_cfg is None or report_cfg.model == config.judge_lm.model:
+        report_judge_lm = judge_lm  # reuse -> not independent
+        logger.warning(
+            "report judge is not independent of the optimization judge (model {}); "
+            "reported ASR is subject to Goodhart. Set report_judge_lm to a different "
+            "model for a defensible number.", config.judge_lm.model)
+    else:
+        report_judge_lm = build_lm(report_cfg)
+
+    judge_lms = [build_lm(c) for c in config.judge_lms] if config.judge_lms else None
+    opt_judge = DivergenceJudge(votes=config.judge_votes,
+                                vote_temperature=config.judge_vote_temperature,
+                                lms=judge_lms)
     if target is None:
         target = build_target(config.agent, agent_fn, config.target_lm)
 
@@ -258,9 +286,7 @@ def run_campaign(
     strategies = get_strategies(config.strategy_ids)
 
     engine = RedTeamEngine(
-        attacker_lm,
-        judge_lm,
-        max_escalation_turns=config.max_escalation_turns,
-        progress=progress,
+        attacker_lm, judge_lm, judge=opt_judge, report_judge_lm=report_judge_lm,
+        max_escalation_turns=config.max_escalation_turns, progress=progress,
     )
     return engine.run(config, target, risks, strategies, declared_intent)

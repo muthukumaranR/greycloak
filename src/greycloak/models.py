@@ -308,6 +308,10 @@ class AttackResult(BaseModel):
     strategy: AttackStrategy
     response: AgentResponse
     judgment: DivergenceJudgment
+    opt_judgment: DivergenceJudgment | None = Field(
+        default=None,
+        description="The optimization judge's verdict (J_opt). The reported "
+        "`judgment` is the independent report judge (J_rep).")
 
     @property
     def succeeded(self) -> bool:
