@@ -36,6 +36,7 @@ from .engine import ProgressEvent, run_campaign
 from .eval_judge import evaluate_judge, load_judge_labels
 from .models import AgentSpec, CampaignConfig, LMConfig, RunRecord, RunStatus
 from .modules import DivergenceJudge
+from .provenance import build_provenance
 from .report import to_markdown
 from .risks import GENERIC_RISKS, domain_risks, load_custom_risks
 from .store import default_store
@@ -119,8 +120,10 @@ def run(
 
     # Persist to the run store so `greycloak runs` / `show` can find it later.
     run_id = uuid.uuid4().hex[:12]
+    provenance = build_provenance(campaign)
     default_store().save(RunRecord(
-        id=run_id, config=campaign, report=report, status=RunStatus.COMPLETED
+        id=run_id, config=campaign, report=report,
+        provenance=provenance, status=RunStatus.COMPLETED
     ))
 
     typer.echo(
@@ -132,7 +135,7 @@ def run(
         Path(out).write_text(report.model_dump_json(indent=2))
         typer.echo(f"report written to {out}")
     if markdown:
-        typer.echo("\n" + to_markdown(report))
+        typer.echo("\n" + to_markdown(report, provenance=provenance))
 
 
 @app.command()
@@ -157,7 +160,10 @@ def show(run_id: str, markdown: bool = typer.Option(True, help="Render markdown.
     if rec.report is None:
         typer.echo(f"run {run_id} status={rec.status.value}, no report")
         return
-    typer.echo(to_markdown(rec.report) if markdown else rec.report.model_dump_json(indent=2))
+    typer.echo(
+        to_markdown(rec.report, provenance=rec.provenance)
+        if markdown else rec.report.model_dump_json(indent=2)
+    )
 
 
 @app.command(name="eval-judge")

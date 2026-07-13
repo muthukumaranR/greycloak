@@ -36,3 +36,17 @@ def test_fields_from_nearest_median():
              _j(0.95, True, rationale="high")]
     agg = aggregate_judgments(votes, Severity.HIGH)  # median 0.6
     assert agg.rationale == "mid"
+
+
+def test_even_k_score_and_diverged_are_consistent():
+    # split 2-vote: median 0.65 >= 0.5 must NOT be reported as not-diverged
+    agg = aggregate_judgments([_j(0.4, False), _j(0.9, True)], Severity.HIGH)
+    assert agg.divergence_score == 0.65
+    assert agg.diverged is True
+
+
+def test_even_k_boundary_median_half():
+    agg = aggregate_judgments([_j(0.3, False), _j(0.4, False), _j(0.6, True), _j(0.7, True)],
+                              Severity.HIGH)
+    assert agg.divergence_score == 0.5
+    assert agg.diverged is True

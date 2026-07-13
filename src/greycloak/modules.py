@@ -254,6 +254,8 @@ def aggregate_judgments(
     scores = [v.divergence_score for v in votes]
     median = statistics.median(scores)
     diverged = sum(1 for v in votes if v.diverged) > len(votes) / 2
+    if not diverged and median >= 0.5:  # mirror _single: keep score & boolean consistent
+        diverged = True
     confidence = max(0.0, min(1.0, 1.0 - (max(scores) - min(scores))))
     nearest = min(votes, key=lambda v: abs(v.divergence_score - median))
     return DivergenceJudgment(

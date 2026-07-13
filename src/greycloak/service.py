@@ -31,6 +31,7 @@ from pydantic import BaseModel
 
 from .engine import ProgressEvent, run_campaign
 from .models import CampaignConfig, RiskDefinition, RunRecord, RunStatus
+from .provenance import build_provenance
 from .risks import GENERIC_RISKS, MULTI_AGENT_RISKS, domain_risks, load_custom_risks
 from .store import default_store
 from .strategies import DEFAULT_STRATEGIES
@@ -99,7 +100,9 @@ def _get_record(run_id: str) -> RunRecord | None:
 @app.post("/api/campaigns")
 def start_campaign(body: StartCampaign) -> dict[str, str]:
     run_id = uuid.uuid4().hex[:12]
-    record = RunRecord(id=run_id, config=body.config)
+    record = RunRecord(
+        id=run_id, config=body.config, provenance=build_provenance(body.config)
+    )
     with _LOCK:
         _RUNS[run_id] = record
         _QUEUES[run_id] = Queue()
