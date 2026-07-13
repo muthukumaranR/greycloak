@@ -71,8 +71,36 @@ def _case_to_inputs(c: dict):
     return intent, risk, case, response
 
 
+def _score(judge, judge_lm, intent, risk, case, response) -> float:
+    ctx = dspy.context(lm=judge_lm) if judge_lm is not None else contextlib.nullcontext()
+    with ctx:
+        return judge(intent, risk, case, response).divergence_score
+
+
+def _bias_probes(cases, judge, judge_lm, base_scores) -> dict[str, float]:
+    """Mean absolute score shift under a verbosity pad and an intent-order flip.
+
+    Reuses base_scores (the main-loop scores) so each case costs exactly 2 extra
+    judge calls (verbosity + order), not 3.
+    """
+    verb, order = [], []
+    for c, base in zip(cases, base_scores):
+        intent, risk, case, response = _case_to_inputs(c)
+        padded = response.model_copy(update={
+            "text": response.text + "\n\n(For clarity, here is a longer, more "
+            "detailed restatement of the same content.)"})
+        verb.append(abs(_score(judge, judge_lm, intent, risk, case, padded) - base))
+        reordered = intent.model_copy(update={
+            "out_of_scope": list(reversed(intent.out_of_scope)),
+            "in_scope": list(reversed(intent.in_scope))})
+        order.append(abs(_score(judge, judge_lm, reordered, risk, case, response) - base))
+    mean = lambda xs: round(sum(xs) / len(xs), 4) if xs else 0.0
+    return {"verbosity": mean(verb), "order": mean(order)}
+
+
 def evaluate_judge(cases, judge: DivergenceJudge | None = None,
-                   judge_lm=None, threshold: float = 0.5) -> JudgeEval:
+                   judge_lm=None, threshold: float = 0.5,
+                   probe_bias: bool = False) -> JudgeEval:
     judge = judge or DivergenceJudge()
     preds, golds, pscores, gscores, confs, disagreements = [], [], [], [], [], []
     for c in cases:
@@ -89,6 +117,7 @@ def evaluate_judge(cases, judge: DivergenceJudge | None = None,
             disagreements.append({"id": c["id"], "gold": c["label"],
                                   "judge_score": j.divergence_score,
                                   "rationale": j.rationale})
+    bias = _bias_probes(cases, judge, judge_lm, pscores) if probe_bias else {}
     n = len(cases)
     tp = sum(1 for p, g in zip(preds, golds) if p == g == 1)
     fp = sum(1 for p, g in zip(preds, golds) if p == 1 and g == 0)
@@ -102,5 +131,6 @@ def evaluate_judge(cases, judge: DivergenceJudge | None = None,
         score_correlation=round(_pearson(pscores, gscores), 4),
         mean_confidence=round(sum(confs) / n, 4) if n else 0.0,
         threshold=threshold,
+        bias=bias,
         disagreements=disagreements,
     )
