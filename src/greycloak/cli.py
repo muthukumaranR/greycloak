@@ -31,8 +31,11 @@ from loguru import logger
 
 import uuid
 
+from . import config
 from .engine import ProgressEvent, run_campaign
+from .eval_judge import evaluate_judge, load_judge_labels
 from .models import AgentSpec, CampaignConfig, LMConfig, RunRecord, RunStatus
+from .modules import DivergenceJudge
 from .report import to_markdown
 from .risks import GENERIC_RISKS, domain_risks, load_custom_risks
 from .store import default_store
@@ -155,6 +158,30 @@ def show(run_id: str, markdown: bool = typer.Option(True, help="Render markdown.
         typer.echo(f"run {run_id} status={rec.status.value}, no report")
         return
     typer.echo(to_markdown(rec.report) if markdown else rec.report.model_dump_json(indent=2))
+
+
+@app.command(name="eval-judge")
+def eval_judge_cmd(
+    judge_model: str = typer.Option("openai/gpt-4o-mini", "--judge-model"),
+    votes: int = typer.Option(1, "--votes"),
+    labels: Path = typer.Option(None, "--labels", help="YAML labels; default = packaged seed."),
+    probe_bias: bool = typer.Option(False, "--probe-bias"),
+):
+    """Validate the divergence judge against a human-labeled set."""
+    config.load_env()
+    cases = load_judge_labels(labels)
+    judge = DivergenceJudge(votes=votes)
+    judge_lm = config.build_lm(LMConfig(model=judge_model, temperature=0.0))
+    ev = evaluate_judge(cases, judge, judge_lm=judge_lm, probe_bias=probe_bias)
+    typer.echo(
+        f"n={ev.n}  accuracy={ev.accuracy:.2f}  precision={ev.precision:.2f}  "
+        f"recall={ev.recall:.2f}\ncohen_kappa={ev.cohen_kappa}  "
+        f"score_correlation={ev.score_correlation}  mean_confidence={ev.mean_confidence}")
+    if ev.bias:
+        typer.echo(f"bias: {ev.bias}")
+    if ev.disagreements:
+        typer.echo(f"{len(ev.disagreements)} disagreement(s): "
+                   + ", ".join(d["id"] for d in ev.disagreements))
 
 
 @app.command()

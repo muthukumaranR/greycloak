@@ -2,6 +2,25 @@
 
 ## Entries
 
+### 2026-07-13T23:59:00Z
+- [done] Task 6: greycloak eval-judge CLI — new `@app.command(name="eval-judge")` in `cli.py` validates the divergence judge against a human-labeled set and prints n/accuracy/precision/recall, cohen_kappa, score_correlation, mean_confidence (plus optional bias line and disagreement ids). Flags: `--judge-model`, `--votes`, `--labels`, `--probe-bias`. Imported `config` as a module (`from . import config`) so the CLI calls `config.build_lm(...)`/`config.load_env()` — makes `build_lm` monkeypatchable in tests. No circular import at load time. New tests/test_cli_eval_judge.py (1 test, DummyLM via monkeypatched build_lm). TDD red→green; full suite 76/76.
+
+### 2026-07-13T23:45:00Z
+- [done] Task 5: Judge bias probes — `evaluate_judge` gained `probe_bias: bool = False`; when set it populates `JudgeEval.bias` with `{verbosity, order}` = mean absolute score shift when the response text is padded with a verbose restatement / when `IntentProfile.in_scope` and `out_of_scope` are reversed. Added module-level `_score(...)` (single scored call under optional `dspy.context`) and `_bias_probes(...)` which REUSES the main-loop `pscores` as base scores so each case costs exactly 2 extra judge calls (total `len(cases)*3` with probes on, 1 without). Default leaves `bias` empty (`{}`). New tests/test_eval_judge_bias.py (2 tests). TDD red→green; full suite 75/75. Commit f32f5ee.
+
+### 2026-07-13T23:05:00Z
+- [done] Task 4: Judge validation harness + human-labeled seed set — new `eval_judge.py` scores any `DivergenceJudge` against a human-labeled set and returns a `JudgeEval` (accuracy/precision/recall, Cohen's kappa, Pearson score correlation, mean confidence, recorded disagreements). Kappa and Pearson are pure Python (no scipy). `load_judge_labels()` reads the new `data/judge_labels.yaml` seed (6 cases across medical-advice, jailbreak, and scope-boundary risks) via `Path(__file__).parent`. `_case_to_inputs` builds IntentProfile/RiskDefinition/AttackCase/AgentResponse from each labeled row; `evaluate_judge` runs the judge under an optional `dspy.context(lm=judge_lm)`. New tests/test_eval_judge.py (3 tests). TDD red→green; full suite 73/73. Commit 067b1ff.
+- Note: plan's Step 4 snippet omitted `disagreements=` in the `JudgeEval(...)` return; added it so disagreements are actually surfaced (required by test + acceptance criteria).
+
+### 2026-07-13T22:15:00Z
+- [done] Task 3: Dual-judge engine (independent report judge) — every case now scored by J_opt (recorded as `AttackResult.opt_judgment`) and an independent J_rep (the reported `judgment`, hence ASR). Added `opt_judgment` field to `AttackResult`. `RedTeamEngine.__init__` gained keyword-only `report_judge_lm`/`report_judge` (defaulting to the opt judge_lm/a fresh DivergenceJudge). `run_case` reuses the opt verdict when `report_judge_lm is judge_lm` (guard keeps single-judge tests green and avoids double-scoring); policy floor merged into both verdicts. `run_campaign` builds the report judge from `config.report_judge_lm` and fires a loud Goodhart warning when it is unset/identical to the opt judge; opt judge built with configured votes/temperature/jury. New tests/test_dual_judge.py (2 tests). TDD red→green; full suite 70/70. Commit 10112e2.
+
+### 2026-07-13T21:30:00Z
+- [done] Task 2: Ensemble DivergenceJudge + config knobs — rebuilt `DivergenceJudge` as an ensemble: `votes>1` casts K self-consistency votes (cache-distinct via `LM.copy(rollout_id, temperature)`), `lms=[...]` casts one vote per cross-family LM, `votes==1`/no lms preserves original single-call behavior. Aggregates via `aggregate_judgments`. Extracted coercion into `_single(...)`; added `import contextlib`. CampaignConfig gained `judge_votes`, `judge_vote_temperature`, `judge_lms`, `report_judge_lm`. New tests/test_judge_ensemble.py (3 tests). TDD red→green; full suite 68/68. Commit a4ad734.
+
+### 2026-07-13T20:08:00Z
+- [done] Task 1: aggregate_judgments — added pure `aggregate_judgments(votes, risk_severity)` to modules.py (median score, majority-vote diverged, agreement-based confidence, fields from nearest-median vote; empty raises, K=1 identity). Added `import statistics`. New tests/test_judge_aggregate.py (5 tests). TDD red→green; full suite 65/65. Commit a928936.
+
 ### 2026-07-13T12:50:00Z
 - [done] Recovered lost source — all 45 files (15 src modules, 12 tests, 8 docs, 4 examples, frontend, memory) had been wiped from disk (only .pyc bytecode remained; nothing committed to git). Reconstructed every file by replaying the session transcript's Write/Edit history and restored them in place.
 - [done] Fixed incomplete refactor — service.py had `get_store()` defined but 4 call sites still referenced the removed module-global `_STORE` (left mid-refactor at end of prior session). Completed the refactor; full suite now 60/60 green.
