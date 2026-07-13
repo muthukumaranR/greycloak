@@ -2,6 +2,13 @@
 
 ## Entries
 
+### 2026-07-14T00:45:00Z
+- [done] Fix even-K judge aggregation inconsistency — `aggregate_judgments` now mirrors `_single`: after the majority-vote `diverged`, added `if not diverged and median >= 0.5: diverged = True` so an even split whose median score is >= 0.5 is never reported as not-diverged. Added 2 TDD tests to tests/test_judge_aggregate.py (7 total pass).
+- [done] Wire run provenance end-to-end — `build_provenance(config)` was dead code (test-only). Now called in cli.py `run(...)` (set on the persisted `RunRecord`, passed to `to_markdown`), cli.py `show(...)` (passes `rec.provenance` to `to_markdown`), and service.py `start_campaign` (set on the `RunRecord` at creation so provenance persists even if the run fails). New tests/test_provenance_wiring.py verifies the CLI path persists a record carrying provenance with a config_hash (no real LM calls, env-var-scoped store). Full suite 81/81. Commit 9ce9eb4.
+
+### 2026-07-14T00:15:00Z
+- [done] Task 7: Run provenance (reproducibility) — new `provenance.py` with `build_provenance(config)` returning a `RunProvenance` (attacker/judge/report-judge/target models, seed, sha256 config_hash [16 hex chars], greycloak + dspy versions via importlib.metadata / `dspy.__version__`). Added `RunProvenance` model above `RunRecord` in models.py and `RunRecord.provenance: RunProvenance | None`. `to_markdown` gained an optional `provenance` param (inserted before `max_examples`; all callers use single positional arg so no break) and appends a "## Provenance" block in the existing line-list style. New tests/test_provenance.py (2 tests: fields + hash stable/sensitive). TDD red→green; full suite 78/78. Commit 48a6bcf.
+
 ### 2026-07-13T23:59:00Z
 - [done] Task 6: greycloak eval-judge CLI — new `@app.command(name="eval-judge")` in `cli.py` validates the divergence judge against a human-labeled set and prints n/accuracy/precision/recall, cohen_kappa, score_correlation, mean_confidence (plus optional bias line and disagreement ids). Flags: `--judge-model`, `--votes`, `--labels`, `--probe-bias`. Imported `config` as a module (`from . import config`) so the CLI calls `config.build_lm(...)`/`config.load_env()` — makes `build_lm` monkeypatchable in tests. No circular import at load time. New tests/test_cli_eval_judge.py (1 test, DummyLM via monkeypatched build_lm). TDD red→green; full suite 76/76.
 

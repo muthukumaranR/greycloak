@@ -4,51 +4,51 @@
     {
       "id": 20,
       "subject": "Task 1: aggregate_judgments",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Combine K judge votes into one robust DivergenceJudgment (pure function).\n\n**Files:**\n- Modify: src/greycloak/modules.py (aggregate_judgments; import statistics)\n- Test: tests/test_judge_aggregate.py\n\n**Acceptance Criteria:**\n- Median score, majority diverged, agreement confidence (1-(max-min)), fields from nearest-median vote\n- Single-element identity; empty raises ValueError\n\n**Verify:** uv run pytest tests/test_judge_aggregate.py -q\n\n```json:metadata\n{\"files\": [\"src/greycloak/modules.py\", \"tests/test_judge_aggregate.py\"], \"verifyCommand\": \"uv run pytest tests/test_judge_aggregate.py -q\", \"acceptanceCriteria\": [\"median/majority/confidence/nearest-median\", \"K=1 identity; empty raises\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 21,
       "subject": "Task 2: Ensemble DivergenceJudge + config",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [20],
       "description": "**Goal:** DivergenceJudge casts K self-consistency votes or one vote per cross-model LM, then aggregates; CampaignConfig gains the knobs.\n\n**Files:**\n- Modify: src/greycloak/modules.py (DivergenceJudge ensemble; import contextlib)\n- Modify: src/greycloak/models.py (CampaignConfig judge_votes/judge_vote_temperature/judge_lms/report_judge_lm)\n- Test: tests/test_judge_ensemble.py\n\n**Acceptance Criteria:**\n- votes==1 compat; lms=[...] jury aggregated; votes>1 K calls aggregated\n- config knobs present\n\n**Verify:** uv run pytest tests/test_judge_ensemble.py tests/test_models.py -q\n\n```json:metadata\n{\"files\": [\"src/greycloak/modules.py\", \"src/greycloak/models.py\", \"tests/test_judge_ensemble.py\"], \"verifyCommand\": \"uv run pytest tests/test_judge_ensemble.py tests/test_models.py -q\", \"acceptanceCriteria\": [\"votes==1 compat; lms jury; votes>1 aggregated\", \"config knobs\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 22,
       "subject": "Task 3: Dual-judge engine (independent J_rep)",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [21],
       "description": "**Goal:** Every case scored by J_opt and J_rep; reported judgment (and ASR) is J_rep; loud warning when they share a model.\n\n**Files:**\n- Modify: src/greycloak/models.py (AttackResult.opt_judgment)\n- Modify: src/greycloak/engine.py (RedTeamEngine report_judge_lm/report_judge; run_case dual scoring; run_campaign report-judge build + Goodhart warning)\n- Test: tests/test_dual_judge.py\n\n**Acceptance Criteria:**\n- judgment=J_rep, opt_judgment=J_opt, succeeded follows J_rep\n- policy floor merged into both\n- warning iff report model == judge model\n\n**Verify:** uv run pytest tests/test_dual_judge.py tests/test_engine.py -q\n\n```json:metadata\n{\"files\": [\"src/greycloak/models.py\", \"src/greycloak/engine.py\", \"tests/test_dual_judge.py\"], \"verifyCommand\": \"uv run pytest tests/test_dual_judge.py tests/test_engine.py -q\", \"acceptanceCriteria\": [\"reported=J_rep, opt=J_opt\", \"policy merged into both\", \"Goodhart warning\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 23,
       "subject": "Task 4: Judge validation harness + seed labels",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [21],
       "description": "**Goal:** Score any judge against a human-labeled set: accuracy/precision/recall, Cohen's kappa, score correlation — no new deps.\n\n**Files:**\n- Create: src/greycloak/eval_judge.py\n- Create: src/greycloak/data/judge_labels.yaml (>=6 cases)\n- Test: tests/test_eval_judge.py\n\n**Acceptance Criteria:**\n- load_judge_labels + evaluate_judge -> JudgeEval(accuracy/precision/recall/cohen_kappa/score_correlation/disagreements)\n- kappa + Pearson pure-Python\n\n**Verify:** uv run pytest tests/test_eval_judge.py -q\n\n```json:metadata\n{\"files\": [\"src/greycloak/eval_judge.py\", \"src/greycloak/data/judge_labels.yaml\", \"tests/test_eval_judge.py\"], \"verifyCommand\": \"uv run pytest tests/test_eval_judge.py -q\", \"acceptanceCriteria\": [\"JudgeEval kappa+correlation\", \"pure-python metrics\", \"disagreements\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 24,
       "subject": "Task 5: Judge bias probes",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [23],
       "description": "**Goal:** Report how much a verbosity or ordering perturbation moves the judge's score.\n\n**Files:**\n- Modify: src/greycloak/eval_judge.py (probe_bias; _score, _bias_probes)\n- Test: tests/test_eval_judge_bias.py\n\n**Acceptance Criteria:**\n- probe_bias=True -> bias={verbosity, order} mean abs deltas\n- default -> bias empty (no extra LM calls)\n\n**Verify:** uv run pytest tests/test_eval_judge_bias.py -q\n\n```json:metadata\n{\"files\": [\"src/greycloak/eval_judge.py\", \"tests/test_eval_judge_bias.py\"], \"verifyCommand\": \"uv run pytest tests/test_eval_judge_bias.py -q\", \"acceptanceCriteria\": [\"verbosity+order deltas\", \"empty by default\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 25,
       "subject": "Task 6: greycloak eval-judge CLI",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [23],
       "description": "**Goal:** Run the validation harness from the CLI and print kappa/correlation/accuracy.\n\n**Files:**\n- Modify: src/greycloak/cli.py (eval-judge command)\n- Test: tests/test_cli_eval_judge.py\n\n**Acceptance Criteria:**\n- greycloak eval-judge [--judge-model][--votes][--labels][--probe-bias] prints metrics\n- uses config.build_lm (monkeypatchable)\n\n**Verify:** uv run pytest tests/test_cli_eval_judge.py -q\n\n```json:metadata\n{\"files\": [\"src/greycloak/cli.py\", \"tests/test_cli_eval_judge.py\"], \"verifyCommand\": \"uv run pytest tests/test_cli_eval_judge.py -q\", \"acceptanceCriteria\": [\"eval-judge prints metrics\", \"uses build_lm\"], \"modelTier\": \"mechanical\"}\n```"
     },
     {
       "id": 26,
       "subject": "Task 7: Run provenance (reproducibility)",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [22],
       "description": "**Goal:** Record the exact setup behind every number: model ids per role, seed, config hash, library versions; surface in the markdown report.\n\n**Files:**\n- Create: src/greycloak/provenance.py (build_provenance)\n- Modify: src/greycloak/models.py (RunProvenance; RunRecord.provenance)\n- Modify: src/greycloak/report.py (provenance block in to_markdown)\n- Test: tests/test_provenance.py\n\n**Acceptance Criteria:**\n- build_provenance -> RunProvenance(models, seed, config_hash, versions)\n- same config -> same hash; changed -> different\n- to_markdown(report, provenance=...) includes provenance block\n\n**Verify:** uv run pytest tests/test_provenance.py tests/test_report.py -q\n\n```json:metadata\n{\"files\": [\"src/greycloak/provenance.py\", \"src/greycloak/models.py\", \"src/greycloak/report.py\", \"tests/test_provenance.py\"], \"verifyCommand\": \"uv run pytest tests/test_provenance.py tests/test_report.py -q\", \"acceptanceCriteria\": [\"provenance fields\", \"stable+sensitive hash\", \"report block\"], \"modelTier\": \"mechanical\"}\n```"
     }
   ],
-  "lastUpdated": "2026-07-13T13:10:00Z"
+  "lastUpdated": "2026-07-13T20:30:00Z"
 }
