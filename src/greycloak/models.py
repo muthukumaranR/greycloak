@@ -351,6 +351,16 @@ class CampaignConfig(BaseModel):
     )
     attacker_lm: LMConfig = Field(default_factory=LMConfig)
     judge_lm: LMConfig = Field(default_factory=LMConfig)
+    judge_votes: int = Field(
+        default=1, ge=1, le=9, description="Self-consistency votes for the judge.")
+    judge_vote_temperature: float = Field(default=0.3, ge=0.0, le=2.0)
+    judge_lms: list[LMConfig] = Field(
+        default_factory=list,
+        description="Optional cross-model judge jury; overrides judge_votes when set.")
+    report_judge_lm: LMConfig | None = Field(
+        default=None,
+        description="Independent judge for REPORTED ASR. Must differ from judge_lm; "
+        "falls back to judge_lm with a loud warning if unset/identical.")
     target_lm: LMConfig | None = Field(
         default=None,
         description="LM for a config-only (hosted) target. Ignored when the user "
