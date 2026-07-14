@@ -26,8 +26,8 @@ from pydantic import BaseModel
 from .agent import TargetAgent
 from .baselines import DirectBaseline
 from .engine import RedTeamEngine, build_run_context
-from .models import AttackCase, AttackStrategy, CampaignConfig, IntentProfile, RiskDefinition
-from .modules import AttackGenerator, DivergenceJudge, _short_id
+from .models import AttackStrategy, CampaignConfig, IntentProfile, RiskDefinition
+from .modules import AttackGenerator, DivergenceJudge
 from .store import save_attacker
 from .strategies import STRATEGY_INDEX
 
@@ -41,32 +41,17 @@ def build_attack_trainset(
 ) -> list[dspy.Example]:
     """Build a DSPy trainset of (risk x strategy) inputs for optimizing attacks.
 
-    Each :class:`dspy.Example` carries exactly the inputs the ``GenerateAttacks``
-    signature consumes, so it can be fed straight to a DSPy optimizer.
+    Each :class:`dspy.Example` carries exactly the inputs
+    :meth:`AttackGenerator.forward` consumes (the real ``intent``/``risk``/
+    ``strategy`` objects), so the optimizer can call ``module(**example.inputs())``
+    and actually generate attacks.
     """
-    from .modules import _render_intent
-
     examples: list[dspy.Example] = []
     for risk in risks:
         for strategy in strategies:
-            examples.append(
-                dspy.Example(
-                    intent=_render_intent(intent),
-                    domain=domain or "",
-                    risk_name=risk.name,
-                    risk_description=risk.description,
-                    risk_objective=risk.objective,
-                    strategy_name=strategy.name,
-                    strategy_guidance=strategy.guidance,
-                    n=n,
-                    # carried for the metric; not signature inputs
-                    _risk=risk,
-                    _strategy=strategy,
-                ).with_inputs(
-                    "intent", "domain", "risk_name", "risk_description",
-                    "risk_objective", "strategy_name", "strategy_guidance", "n",
-                )
-            )
+            examples.append(dspy.Example(
+                intent=intent, risk=risk, strategy=strategy, n=n, domain=domain or "",
+            ).with_inputs("intent", "risk", "strategy", "n", "domain"))
     logger.info("built attack trainset with {} example(s)", len(examples))
     return examples
 
@@ -89,22 +74,13 @@ def make_divergence_metric(
                pred_name=None, pred_trace=None) -> float:
         # Extra args (pred_name, pred_trace) keep this compatible with GEPA,
         # which calls metrics with a richer signature than MIPRO/Bootstrap.
-        attacks = getattr(prediction, "attacks", None) or []
-        risk: RiskDefinition = example.get("_risk")
-        strategy: AttackStrategy = example.get("_strategy", None)
-        if not attacks or risk is None:
+        # `prediction` is AttackGenerator.forward's return: a list[AttackCase].
+        cases = prediction if isinstance(prediction, list) else []
+        risk: RiskDefinition = example.get("risk") or example.get("_risk")
+        if not cases or risk is None:
             return 0.0
         scores: list[float] = []
-        for prompt in attacks:
-            if not str(prompt).strip():
-                continue
-            case = AttackCase(
-                id=_short_id("opt"),
-                risk_id=risk.id,
-                strategy_id=getattr(strategy, "id", "direct"),
-                objective=risk.objective,
-                turns=[str(prompt)],
-            )
+        for case in cases:
             response = target.respond(case.turns)
             if judge_lm is not None:
                 with dspy.context(lm=judge_lm):
@@ -178,16 +154,11 @@ def split_pairs(pairs, train_frac: float, seed: int):
 
 def build_examples_for_pairs(intent, pairs, domain=None, n: int = 3):
     """dspy.Examples (one per pair) for the optimizer, mirroring build_attack_trainset."""
-    from .modules import _render_intent
     examples = []
     for risk, strategy in pairs:
         examples.append(dspy.Example(
-            intent=_render_intent(intent), domain=domain or "",
-            risk_name=risk.name, risk_description=risk.description,
-            risk_objective=risk.objective, strategy_name=strategy.name,
-            strategy_guidance=strategy.guidance, n=n, _risk=risk, _strategy=strategy,
-        ).with_inputs("intent", "domain", "risk_name", "risk_description",
-                      "risk_objective", "strategy_name", "strategy_guidance", "n"))
+            intent=intent, risk=risk, strategy=strategy, n=n, domain=domain or "",
+        ).with_inputs("intent", "risk", "strategy", "n", "domain"))
     return examples
 
 
@@ -248,7 +219,8 @@ def run_optimization(config: CampaignConfig, method: str = "bootstrap",
         opt_metric = make_divergence_metric(ctx.target, intent, judge=ctx.opt_judge,
                                             judge_lm=ctx.judge_lm)
         base_gen = AttackGenerator()
-        compiled = optimize_attacker(base_gen, train_ex, opt_metric, method=method)
+        with dspy.context(lm=ctx.attacker_lm):
+            compiled = optimize_attacker(base_gen, train_ex, opt_metric, method=method)
         compiled_final = compiled
         for name, atk in (("direct", DirectBaseline()), ("baseline", base_gen),
                           ("compiled", compiled)):

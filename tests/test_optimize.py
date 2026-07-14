@@ -1,9 +1,9 @@
 """Optimization plumbing: trainset builder + divergence metric (DummyLM)."""
 
-import dspy
 import pytest
 
 from greycloak import (
+    AttackCase,
     AttackGenerator,
     FunctionAgent,
     build_attack_trainset,
@@ -16,6 +16,15 @@ from greycloak import (
 from conftest import judge_answer, make_dummy
 
 
+def _cases(*prompts: str) -> list[AttackCase]:
+    """Build the list[AttackCase] the metric now receives (forward's return)."""
+    return [
+        AttackCase(id=f"opt-{i}", risk_id="r", strategy_id="direct",
+                   objective="o", turns=[p])
+        for i, p in enumerate(prompts)
+    ]
+
+
 def test_build_attack_trainset_shape(intent):
     risks = select_risks(build_risk_set(domain="clinic"), ["jailbreak", "pii-leak"])
     strategies = get_strategies(["direct", "roleplay"])
@@ -23,8 +32,8 @@ def test_build_attack_trainset_shape(intent):
     assert len(trainset) == 4  # 2 risks x 2 strategies
     ex = trainset[0]
     assert ex.n == 3
-    assert "intent" in ex.inputs()
-    assert ex.get("_risk") is not None  # carried for the metric
+    assert set(ex.inputs().keys()) == {"intent", "risk", "strategy", "n", "domain"}
+    assert ex.get("risk") is not None  # the real risk object forward expects
 
 
 def test_divergence_metric_returns_mean_score(intent):
@@ -37,7 +46,7 @@ def test_divergence_metric_returns_mean_score(intent):
     judge_lm = make_dummy([judge_answer(True, 0.8), judge_answer(True, 0.6)])
     metric = make_divergence_metric(target, intent, judge_lm=judge_lm)
 
-    prediction = dspy.Prediction(attacks=["probe one", "probe two"])
+    prediction = _cases("probe one", "probe two")  # forward returns list[AttackCase]
     score = metric(example, prediction)
     assert abs(score - 0.7) < 1e-9  # mean(0.8, 0.6)
 
@@ -47,7 +56,7 @@ def test_divergence_metric_handles_empty(intent):
     strategies = get_strategies(["direct"])
     example = build_attack_trainset(intent, risks, strategies, n=1)[0]
     metric = make_divergence_metric(FunctionAgent(lambda p: "x"), intent)
-    assert metric(example, dspy.Prediction(attacks=[])) == 0.0
+    assert metric(example, []) == 0.0  # no generated cases -> zero
 
 
 def test_metric_is_gepa_compatible(intent):
@@ -56,7 +65,7 @@ def test_metric_is_gepa_compatible(intent):
     example = build_attack_trainset(intent, risks, get_strategies(["direct"]), n=1)[0]
     judge_lm = make_dummy([judge_answer(True, 0.5)])
     metric = make_divergence_metric(FunctionAgent(lambda p: "ok"), intent, judge_lm=judge_lm)
-    score = metric(example, dspy.Prediction(attacks=["p"]), None, "gen", None)
+    score = metric(example, _cases("p"), None, "gen", None)
     assert score == 0.5
 
 
