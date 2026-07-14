@@ -21,10 +21,14 @@ from typing import Callable
 
 import dspy
 from loguru import logger
+from pydantic import BaseModel
 
 from .agent import TargetAgent
-from .models import AttackCase, AttackStrategy, IntentProfile, RiskDefinition
+from .baselines import DirectBaseline
+from .engine import RedTeamEngine, build_run_context
+from .models import AttackCase, AttackStrategy, CampaignConfig, IntentProfile, RiskDefinition
 from .modules import AttackGenerator, DivergenceJudge, _short_id
+from .store import save_attacker
 from .strategies import STRATEGY_INDEX
 
 
@@ -212,3 +216,60 @@ def measure_asr(attacker, pairs, intent, target, judge, domain=None,
     return {"asr": successes / total if total else 0.0,
             "mean_divergence": sum(scores) / len(scores) if scores else 0.0,
             "n": total}
+
+
+class OptimizationResult(BaseModel):
+    method: str
+    seeds: int
+    train_frac: float
+    arms: dict[str, dict]     # arm -> {asr_mean, asr_stdev, div_mean}
+    opt_rep_gap: float        # compiled: J_opt ASR - J_rep ASR (reward-gaming signal)
+    attacker_id: str | None = None
+
+
+def run_optimization(config: CampaignConfig, method: str = "bootstrap",
+                     train_frac: float = 0.6, seeds: int = 1,
+                     save_id: str | None = None, progress=None) -> OptimizationResult:
+    ctx = build_run_context(config)
+    engine = RedTeamEngine(ctx.attacker_lm, ctx.judge_lm, judge=ctx.opt_judge,
+                           report_judge_lm=ctx.report_judge_lm)
+    intent = engine.resolve_intent(config.agent.system_prompt, config.agent.domain, None)
+    domain = config.agent.domain
+    pairs = [(r, s) for r in ctx.risks for s in ctx.strategies]
+    rep_judge = DivergenceJudge()
+
+    per_seed = {"direct": [], "baseline": [], "compiled": []}
+    div_seed = {"direct": [], "baseline": [], "compiled": []}
+    opt_rep_gaps = []
+    compiled_final = None
+    for s in range(seeds):
+        train_pairs, eval_pairs = split_pairs(pairs, train_frac, seed=config.seed + s)
+        train_ex = build_examples_for_pairs(intent, train_pairs, domain, config.attacks_per_pair)
+        opt_metric = make_divergence_metric(ctx.target, intent, judge=ctx.opt_judge,
+                                            judge_lm=ctx.judge_lm)
+        base_gen = AttackGenerator()
+        compiled = optimize_attacker(base_gen, train_ex, opt_metric, method=method)
+        compiled_final = compiled
+        for name, atk in (("direct", DirectBaseline()), ("baseline", base_gen),
+                          ("compiled", compiled)):
+            r = measure_asr(atk, eval_pairs, intent, ctx.target, rep_judge, domain=domain,
+                            attacker_lm=ctx.attacker_lm, judge_lm=ctx.report_judge_lm,
+                            n=config.attacks_per_pair)
+            per_seed[name].append(r["asr"]); div_seed[name].append(r["mean_divergence"])
+        opt_r = measure_asr(compiled, eval_pairs, intent, ctx.target, ctx.opt_judge,
+                            domain=domain, attacker_lm=ctx.attacker_lm, judge_lm=ctx.judge_lm,
+                            n=config.attacks_per_pair)
+        opt_rep_gaps.append(opt_r["asr"] - per_seed["compiled"][-1])
+
+    def _agg(xs):
+        return {"asr_mean": round(statistics.mean(xs), 4),
+                "asr_stdev": round(statistics.pstdev(xs), 4) if len(xs) > 1 else 0.0}
+    arms = {name: {**_agg(per_seed[name]),
+                   "div_mean": round(statistics.mean(div_seed[name]), 4)}
+            for name in per_seed}
+    attacker_id = None
+    if save_id and compiled_final is not None:
+        save_attacker(save_id, compiled_final); attacker_id = save_id
+    return OptimizationResult(method=method, seeds=seeds, train_frac=train_frac, arms=arms,
+                              opt_rep_gap=round(statistics.mean(opt_rep_gaps), 4),
+                              attacker_id=attacker_id)
