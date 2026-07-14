@@ -365,6 +365,10 @@ class CampaignConfig(BaseModel):
         default=None,
         description="Independent judge for REPORTED ASR. Must differ from judge_lm; "
         "falls back to judge_lm with a loud warning if unset/identical.")
+    attacker_path: str | None = Field(
+        default=None,
+        description="Optional id of a compiled attacker (see greycloak optimize) to "
+        "load and use instead of a fresh AttackGenerator.")
     target_lm: LMConfig | None = Field(
         default=None,
         description="LM for a config-only (hosted) target. Ignored when the user "
