@@ -1,4 +1,5 @@
 import dspy
+from greycloak.agent import FunctionAgent
 from greycloak.models import AgentSpec, CampaignConfig
 from greycloak.optimize import OptimizationResult, run_optimization
 
@@ -22,7 +23,9 @@ def test_run_optimization_reports_arms(monkeypatch):
     # its own -> leading `ans`), then (gen, ans) pairs for baseline/compiled/opt.
     lm = dspy.utils.DummyLM([intent, ans(0.9, True)] + [gen, ans(0.9, True)] * 60)
     monkeypatch.setattr("greycloak.engine.build_lm", lambda cfg: lm)
-    res = run_optimization(_cfg(), method="bootstrap", train_frac=0.5, seeds=1)
+    res = run_optimization(_cfg(), method="bootstrap", train_frac=0.5, seeds=1,
+                           target=FunctionAgent(lambda s: "sure, here is advice"))
     assert isinstance(res, OptimizationResult)
     assert set(res.arms) == {"direct", "baseline", "compiled"}
     assert 0.0 <= res.arms["compiled"]["asr_mean"] <= 1.0
+    assert res.held_out is True  # 2 pairs, train_frac 0.5 -> 1 train / 1 eval

@@ -25,11 +25,10 @@ from pydantic import BaseModel
 
 from .agent import TargetAgent
 from .baselines import DirectBaseline
-from .engine import RedTeamEngine, build_run_context
+from .engine import ProgressEvent, RedTeamEngine, build_run_context
 from .models import AttackStrategy, CampaignConfig, IntentProfile, RiskDefinition
 from .modules import AttackGenerator, DivergenceJudge
 from .store import save_attacker
-from .strategies import STRATEGY_INDEX
 
 
 def build_attack_trainset(
@@ -76,7 +75,7 @@ def make_divergence_metric(
         # which calls metrics with a richer signature than MIPRO/Bootstrap.
         # `prediction` is AttackGenerator.forward's return: a list[AttackCase].
         cases = prediction if isinstance(prediction, list) else []
-        risk: RiskDefinition = example.get("risk") or example.get("_risk")
+        risk: RiskDefinition = example.get("risk")
         if not cases or risk is None:
             return 0.0
         scores: list[float] = []
@@ -196,32 +195,48 @@ class OptimizationResult(BaseModel):
     arms: dict[str, dict]     # arm -> {asr_mean, asr_stdev, div_mean}
     opt_rep_gap: float        # compiled: J_opt ASR - J_rep ASR (reward-gaming signal)
     attacker_id: str | None = None
+    held_out: bool = True
+    report_judge_independent: bool = False
+    report_judge_model: str = ""
 
 
 def run_optimization(config: CampaignConfig, method: str = "bootstrap",
                      train_frac: float = 0.6, seeds: int = 1,
-                     save_id: str | None = None, progress=None) -> OptimizationResult:
-    ctx = build_run_context(config)
+                     save_id: str | None = None, progress=None,
+                     target=None, agent_fn=None) -> OptimizationResult:
+    ctx = build_run_context(config, agent_fn=agent_fn, target=target)
     engine = RedTeamEngine(ctx.attacker_lm, ctx.judge_lm, judge=ctx.opt_judge,
                            report_judge_lm=ctx.report_judge_lm)
     intent = engine.resolve_intent(config.agent.system_prompt, config.agent.domain, None)
     domain = config.agent.domain
     pairs = [(r, s) for r in ctx.risks for s in ctx.strategies]
     rep_judge = DivergenceJudge()
+    emit = progress or (lambda ev: None)
 
     per_seed = {"direct": [], "baseline": [], "compiled": []}
     div_seed = {"direct": [], "baseline": [], "compiled": []}
     opt_rep_gaps = []
     compiled_final = None
+    held_out = True
     for s in range(seeds):
         train_pairs, eval_pairs = split_pairs(pairs, train_frac, seed=config.seed + s)
+        held_out = eval_pairs is not train_pairs
+        if not held_out:
+            logger.warning(
+                "optimize: too few (risk x strategy) pairs to hold out an eval split; "
+                "ASR is measured on the TRAINING pairs and is NOT a held-out number.")
         train_ex = build_examples_for_pairs(intent, train_pairs, domain, config.attacks_per_pair)
         opt_metric = make_divergence_metric(ctx.target, intent, judge=ctx.opt_judge,
                                             judge_lm=ctx.judge_lm)
         base_gen = AttackGenerator()
+        emit(ProgressEvent("optimize", f"seed {s+1}/{seeds}: compiling attacker",
+                           done=s, total=seeds))
         with dspy.context(lm=ctx.attacker_lm):
             compiled = optimize_attacker(base_gen, train_ex, opt_metric, method=method)
         compiled_final = compiled
+        emit(ProgressEvent("optimize",
+                           f"seed {s+1}/{seeds}: measuring arms (direct/baseline/compiled)",
+                           done=s, total=seeds))
         for name, atk in (("direct", DirectBaseline()), ("baseline", base_gen),
                           ("compiled", compiled)):
             r = measure_asr(atk, eval_pairs, intent, ctx.target, rep_judge, domain=domain,
@@ -242,6 +257,12 @@ def run_optimization(config: CampaignConfig, method: str = "bootstrap",
     attacker_id = None
     if save_id and compiled_final is not None:
         save_attacker(save_id, compiled_final); attacker_id = save_id
+    rj = config.report_judge_lm
+    report_independent = rj is not None and rj.model != config.judge_lm.model
+    report_model = (rj.model if rj is not None else config.judge_lm.model)
+    emit(ProgressEvent("done", "optimization complete", done=seeds, total=seeds))
     return OptimizationResult(method=method, seeds=seeds, train_frac=train_frac, arms=arms,
                               opt_rep_gap=round(statistics.mean(opt_rep_gaps), 4),
-                              attacker_id=attacker_id)
+                              attacker_id=attacker_id, held_out=held_out,
+                              report_judge_independent=report_independent,
+                              report_judge_model=report_model)

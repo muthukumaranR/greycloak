@@ -210,6 +210,11 @@ def optimize(
         typer.echo(f"  {name:<9} ASR={a['asr_mean']:.0%} +/- {a['asr_stdev']:.0%}  "
                    f"mean_div={a['div_mean']:.2f}")
     typer.echo(f"  J_opt-J_rep gap (reward-gaming): {res.opt_rep_gap:+.0%}")
+    if not res.held_out:
+        typer.echo("  WARNING: eval not held out (too few pairs) — ASR is on training pairs")
+    if not res.report_judge_independent:
+        typer.echo(f"  WARNING: report judge == optimization judge ({res.report_judge_model}); "
+                   "ASR is Goodhart-subject — set report_judge_lm to a different model")
     if res.attacker_id:
         typer.echo(f"  saved compiled attacker: {res.attacker_id}")
 
