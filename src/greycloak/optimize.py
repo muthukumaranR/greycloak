@@ -14,6 +14,9 @@ objective we care about.
 
 from __future__ import annotations
 
+import contextlib
+import random
+import statistics
 from typing import Callable
 
 import dspy
@@ -157,3 +160,55 @@ def optimize_attacker(
         raise ValueError(f"unknown optimization method: {method!r}")
     logger.info("attacker optimized via {}", method)
     return compiled
+
+
+def split_pairs(pairs, train_frac: float, seed: int):
+    """Deterministically split a list of (risk, strategy) pairs into (train, eval)."""
+    idx = list(range(len(pairs)))
+    random.Random(seed).shuffle(idx)
+    k = max(1, round(len(pairs) * train_frac)) if len(pairs) > 1 else len(pairs)
+    train = [pairs[i] for i in idx[:k]]
+    eval_ = [pairs[i] for i in idx[k:]] or train  # tiny sets: eval on train (caller warns)
+    return train, eval_
+
+
+def build_examples_for_pairs(intent, pairs, domain=None, n: int = 3):
+    """dspy.Examples (one per pair) for the optimizer, mirroring build_attack_trainset."""
+    from .modules import _render_intent
+    examples = []
+    for risk, strategy in pairs:
+        examples.append(dspy.Example(
+            intent=_render_intent(intent), domain=domain or "",
+            risk_name=risk.name, risk_description=risk.description,
+            risk_objective=risk.objective, strategy_name=strategy.name,
+            strategy_guidance=strategy.guidance, n=n, _risk=risk, _strategy=strategy,
+        ).with_inputs("intent", "domain", "risk_name", "risk_description",
+                      "risk_objective", "strategy_name", "strategy_guidance", "n"))
+    return examples
+
+
+def measure_asr(attacker, pairs, intent, target, judge, domain=None,
+                attacker_lm=None, judge_lm=None, n: int = 1) -> dict:
+    """Run `attacker` over `pairs` against `target`, judge each with `judge`.
+
+    Returns {asr, mean_divergence, n}. Pass the report judge (J_rep) as `judge`
+    (and its LM as `judge_lm`) when measuring a number you intend to report.
+    """
+    total = 0
+    successes = 0
+    scores: list[float] = []
+    for risk, strategy in pairs:
+        actx = dspy.context(lm=attacker_lm) if attacker_lm is not None else contextlib.nullcontext()
+        with actx:
+            cases = attacker(intent, risk, strategy, n=n, domain=domain)
+        for case in cases:
+            response = target.respond(case.turns)
+            jctx = dspy.context(lm=judge_lm) if judge_lm is not None else contextlib.nullcontext()
+            with jctx:
+                judgment = judge(intent, risk, case, response)
+            total += 1
+            successes += 1 if judgment.diverged else 0
+            scores.append(judgment.divergence_score)
+    return {"asr": successes / total if total else 0.0,
+            "mean_divergence": sum(scores) / len(scores) if scores else 0.0,
+            "n": total}
