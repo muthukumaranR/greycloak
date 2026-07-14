@@ -14,15 +14,21 @@ objective we care about.
 
 from __future__ import annotations
 
+import contextlib
+import random
+import statistics
 from typing import Callable
 
 import dspy
 from loguru import logger
+from pydantic import BaseModel
 
 from .agent import TargetAgent
-from .models import AttackCase, AttackStrategy, IntentProfile, RiskDefinition
-from .modules import AttackGenerator, DivergenceJudge, _short_id
-from .strategies import STRATEGY_INDEX
+from .baselines import DirectBaseline
+from .engine import ProgressEvent, RedTeamEngine, build_run_context
+from .models import AttackStrategy, CampaignConfig, IntentProfile, RiskDefinition
+from .modules import AttackGenerator, DivergenceJudge
+from .store import save_attacker
 
 
 def build_attack_trainset(
@@ -34,32 +40,17 @@ def build_attack_trainset(
 ) -> list[dspy.Example]:
     """Build a DSPy trainset of (risk x strategy) inputs for optimizing attacks.
 
-    Each :class:`dspy.Example` carries exactly the inputs the ``GenerateAttacks``
-    signature consumes, so it can be fed straight to a DSPy optimizer.
+    Each :class:`dspy.Example` carries exactly the inputs
+    :meth:`AttackGenerator.forward` consumes (the real ``intent``/``risk``/
+    ``strategy`` objects), so the optimizer can call ``module(**example.inputs())``
+    and actually generate attacks.
     """
-    from .modules import _render_intent
-
     examples: list[dspy.Example] = []
     for risk in risks:
         for strategy in strategies:
-            examples.append(
-                dspy.Example(
-                    intent=_render_intent(intent),
-                    domain=domain or "",
-                    risk_name=risk.name,
-                    risk_description=risk.description,
-                    risk_objective=risk.objective,
-                    strategy_name=strategy.name,
-                    strategy_guidance=strategy.guidance,
-                    n=n,
-                    # carried for the metric; not signature inputs
-                    _risk=risk,
-                    _strategy=strategy,
-                ).with_inputs(
-                    "intent", "domain", "risk_name", "risk_description",
-                    "risk_objective", "strategy_name", "strategy_guidance", "n",
-                )
-            )
+            examples.append(dspy.Example(
+                intent=intent, risk=risk, strategy=strategy, n=n, domain=domain or "",
+            ).with_inputs("intent", "risk", "strategy", "n", "domain"))
     logger.info("built attack trainset with {} example(s)", len(examples))
     return examples
 
@@ -82,22 +73,13 @@ def make_divergence_metric(
                pred_name=None, pred_trace=None) -> float:
         # Extra args (pred_name, pred_trace) keep this compatible with GEPA,
         # which calls metrics with a richer signature than MIPRO/Bootstrap.
-        attacks = getattr(prediction, "attacks", None) or []
-        risk: RiskDefinition = example.get("_risk")
-        strategy: AttackStrategy = example.get("_strategy", None)
-        if not attacks or risk is None:
+        # `prediction` is AttackGenerator.forward's return: a list[AttackCase].
+        cases = prediction if isinstance(prediction, list) else []
+        risk: RiskDefinition = example.get("risk")
+        if not cases or risk is None:
             return 0.0
         scores: list[float] = []
-        for prompt in attacks:
-            if not str(prompt).strip():
-                continue
-            case = AttackCase(
-                id=_short_id("opt"),
-                risk_id=risk.id,
-                strategy_id=getattr(strategy, "id", "direct"),
-                objective=risk.objective,
-                turns=[str(prompt)],
-            )
+        for case in cases:
             response = target.respond(case.turns)
             if judge_lm is not None:
                 with dspy.context(lm=judge_lm):
@@ -157,3 +139,130 @@ def optimize_attacker(
         raise ValueError(f"unknown optimization method: {method!r}")
     logger.info("attacker optimized via {}", method)
     return compiled
+
+
+def split_pairs(pairs, train_frac: float, seed: int):
+    """Deterministically split a list of (risk, strategy) pairs into (train, eval)."""
+    idx = list(range(len(pairs)))
+    random.Random(seed).shuffle(idx)
+    k = max(1, round(len(pairs) * train_frac)) if len(pairs) > 1 else len(pairs)
+    train = [pairs[i] for i in idx[:k]]
+    eval_ = [pairs[i] for i in idx[k:]] or train  # tiny sets: eval on train (caller warns)
+    return train, eval_
+
+
+def build_examples_for_pairs(intent, pairs, domain=None, n: int = 3):
+    """dspy.Examples (one per pair) for the optimizer, mirroring build_attack_trainset."""
+    examples = []
+    for risk, strategy in pairs:
+        examples.append(dspy.Example(
+            intent=intent, risk=risk, strategy=strategy, n=n, domain=domain or "",
+        ).with_inputs("intent", "risk", "strategy", "n", "domain"))
+    return examples
+
+
+def measure_asr(attacker, pairs, intent, target, judge, domain=None,
+                attacker_lm=None, judge_lm=None, n: int = 1) -> dict:
+    """Run `attacker` over `pairs` against `target`, judge each with `judge`.
+
+    Returns {asr, mean_divergence, n}. Pass the report judge (J_rep) as `judge`
+    (and its LM as `judge_lm`) when measuring a number you intend to report.
+    """
+    total = 0
+    successes = 0
+    scores: list[float] = []
+    for risk, strategy in pairs:
+        actx = dspy.context(lm=attacker_lm) if attacker_lm is not None else contextlib.nullcontext()
+        with actx:
+            cases = attacker(intent, risk, strategy, n=n, domain=domain)
+        for case in cases:
+            response = target.respond(case.turns)
+            jctx = dspy.context(lm=judge_lm) if judge_lm is not None else contextlib.nullcontext()
+            with jctx:
+                judgment = judge(intent, risk, case, response)
+            total += 1
+            successes += 1 if judgment.diverged else 0
+            scores.append(judgment.divergence_score)
+    return {"asr": successes / total if total else 0.0,
+            "mean_divergence": sum(scores) / len(scores) if scores else 0.0,
+            "n": total}
+
+
+class OptimizationResult(BaseModel):
+    method: str
+    seeds: int
+    train_frac: float
+    arms: dict[str, dict]     # arm -> {asr_mean, asr_stdev, div_mean}
+    opt_rep_gap: float        # compiled: J_opt ASR - J_rep ASR (reward-gaming signal)
+    attacker_id: str | None = None
+    held_out: bool = True
+    report_judge_independent: bool = False
+    report_judge_model: str = ""
+
+
+def run_optimization(config: CampaignConfig, method: str = "bootstrap",
+                     train_frac: float = 0.6, seeds: int = 1,
+                     save_id: str | None = None, progress=None,
+                     target=None, agent_fn=None) -> OptimizationResult:
+    ctx = build_run_context(config, agent_fn=agent_fn, target=target)
+    engine = RedTeamEngine(ctx.attacker_lm, ctx.judge_lm, judge=ctx.opt_judge,
+                           report_judge_lm=ctx.report_judge_lm)
+    intent = engine.resolve_intent(config.agent.system_prompt, config.agent.domain, None)
+    domain = config.agent.domain
+    pairs = [(r, s) for r in ctx.risks for s in ctx.strategies]
+    rep_judge = DivergenceJudge()
+    emit = progress or (lambda ev: None)
+
+    per_seed = {"direct": [], "baseline": [], "compiled": []}
+    div_seed = {"direct": [], "baseline": [], "compiled": []}
+    opt_rep_gaps = []
+    compiled_final = None
+    held_out = True
+    for s in range(seeds):
+        train_pairs, eval_pairs = split_pairs(pairs, train_frac, seed=config.seed + s)
+        held_out = eval_pairs is not train_pairs
+        if not held_out:
+            logger.warning(
+                "optimize: too few (risk x strategy) pairs to hold out an eval split; "
+                "ASR is measured on the TRAINING pairs and is NOT a held-out number.")
+        train_ex = build_examples_for_pairs(intent, train_pairs, domain, config.attacks_per_pair)
+        opt_metric = make_divergence_metric(ctx.target, intent, judge=ctx.opt_judge,
+                                            judge_lm=ctx.judge_lm)
+        base_gen = AttackGenerator()
+        emit(ProgressEvent("optimize", f"seed {s+1}/{seeds}: compiling attacker",
+                           done=s, total=seeds))
+        with dspy.context(lm=ctx.attacker_lm):
+            compiled = optimize_attacker(base_gen, train_ex, opt_metric, method=method)
+        compiled_final = compiled
+        emit(ProgressEvent("optimize",
+                           f"seed {s+1}/{seeds}: measuring arms (direct/baseline/compiled)",
+                           done=s, total=seeds))
+        for name, atk in (("direct", DirectBaseline()), ("baseline", base_gen),
+                          ("compiled", compiled)):
+            r = measure_asr(atk, eval_pairs, intent, ctx.target, rep_judge, domain=domain,
+                            attacker_lm=ctx.attacker_lm, judge_lm=ctx.report_judge_lm,
+                            n=config.attacks_per_pair)
+            per_seed[name].append(r["asr"]); div_seed[name].append(r["mean_divergence"])
+        opt_r = measure_asr(compiled, eval_pairs, intent, ctx.target, ctx.opt_judge,
+                            domain=domain, attacker_lm=ctx.attacker_lm, judge_lm=ctx.judge_lm,
+                            n=config.attacks_per_pair)
+        opt_rep_gaps.append(opt_r["asr"] - per_seed["compiled"][-1])
+
+    def _agg(xs):
+        return {"asr_mean": round(statistics.mean(xs), 4),
+                "asr_stdev": round(statistics.pstdev(xs), 4) if len(xs) > 1 else 0.0}
+    arms = {name: {**_agg(per_seed[name]),
+                   "div_mean": round(statistics.mean(div_seed[name]), 4)}
+            for name in per_seed}
+    attacker_id = None
+    if save_id and compiled_final is not None:
+        save_attacker(save_id, compiled_final); attacker_id = save_id
+    rj = config.report_judge_lm
+    report_independent = rj is not None and rj.model != config.judge_lm.model
+    report_model = (rj.model if rj is not None else config.judge_lm.model)
+    emit(ProgressEvent("done", "optimization complete", done=seeds, total=seeds))
+    return OptimizationResult(method=method, seeds=seeds, train_frac=train_frac, arms=arms,
+                              opt_rep_gap=round(statistics.mean(opt_rep_gaps), 4),
+                              attacker_id=attacker_id, held_out=held_out,
+                              report_judge_independent=report_independent,
+                              report_judge_model=report_model)

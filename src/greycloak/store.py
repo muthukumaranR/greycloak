@@ -70,3 +70,27 @@ class RunStore:
 def default_store() -> RunStore:
     """Store rooted at ``$GREYCLOAK_RUNS_DIR`` (default ``./runs``)."""
     return RunStore(os.getenv("GREYCLOAK_RUNS_DIR", "runs"))
+
+
+def _attackers_dir() -> Path:
+    root = Path(os.getenv("GREYCLOAK_RUNS_DIR", "runs")) / "attackers"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def save_attacker(attacker_id: str, generator) -> Path:
+    """Persist a (possibly compiled) AttackGenerator via DSPy's state save."""
+    path = _attackers_dir() / f"{attacker_id}.json"
+    generator.save(str(path))
+    logger.debug("saved attacker {} -> {}", attacker_id, path)
+    return path
+
+
+def load_attacker(attacker_id: str):
+    """Load an AttackGenerator saved by save_attacker."""
+    from .modules import AttackGenerator
+
+    path = _attackers_dir() / f"{attacker_id}.json"
+    gen = AttackGenerator()
+    gen.load(str(path))
+    return gen

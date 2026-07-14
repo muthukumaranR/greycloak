@@ -236,6 +236,51 @@ class RedTeamEngine:
         return report
 
 
+@dataclass
+class RunContext:
+    """Everything a campaign or optimization run needs, built from a config."""
+
+    attacker_lm: object
+    judge_lm: object
+    report_judge_lm: object
+    opt_judge: DivergenceJudge
+    target: TargetAgent
+    risks: list[RiskDefinition]
+    strategies: list[AttackStrategy]
+
+
+def build_run_context(config, agent_fn=None, target=None, custom_risks=None) -> RunContext:
+    """Build the LMs, judge, target, and risk/strategy sets a run needs.
+
+    Shared by :func:`run_campaign` and the optimization driver so both derive
+    their runtime pieces from a :class:`CampaignConfig` identically.
+    """
+    load_env()
+    attacker_lm = build_lm(config.attacker_lm)
+    judge_lm = build_lm(config.judge_lm)
+    report_cfg = config.report_judge_lm
+    if report_cfg is None or report_cfg.model == config.judge_lm.model:
+        report_judge_lm = judge_lm
+        logger.warning(
+            "report judge is not independent of the optimization judge (model {}); "
+            "reported ASR is subject to Goodhart. Set report_judge_lm to a different "
+            "model for a defensible number.", config.judge_lm.model)
+    else:
+        report_judge_lm = build_lm(report_cfg)
+    judge_lms = [build_lm(c) for c in config.judge_lms] if config.judge_lms else None
+    opt_judge = DivergenceJudge(votes=config.judge_votes,
+                                vote_temperature=config.judge_vote_temperature,
+                                lms=judge_lms)
+    if target is None:
+        target = build_target(config.agent, agent_fn, config.target_lm)
+    include_multi_agent = isinstance(target, MultiAgentSystem)
+    all_risks = build_risk_set(domain=config.agent.domain,
+                               include_multi_agent=include_multi_agent, custom=custom_risks)
+    risks = select_risks(all_risks, config.risk_ids)
+    strategies = get_strategies(config.strategy_ids)
+    return RunContext(attacker_lm, judge_lm, report_judge_lm, opt_judge, target, risks, strategies)
+
+
 def run_campaign(
     config: CampaignConfig,
     agent_fn: Callable | None = None,
@@ -243,6 +288,7 @@ def run_campaign(
     custom_risks: list[RiskDefinition] | None = None,
     declared_intent: IntentProfile | None = None,
     progress: ProgressCallback | None = None,
+    attacker: AttackGenerator | None = None,
 ) -> RedTeamReport:
     """One-call entry point used by the CLI and service.
 
@@ -253,40 +299,16 @@ def run_campaign(
     * Pass a prebuilt ``target`` (e.g. a :class:`MultiAgentSystem`) to attack an
       already-constructed system; multi-agent risks are then included by default.
     * Omit both to build a hosted LM target from ``config.agent`` + ``target_lm``.
+    * Pass ``attacker`` (or set ``config.attacker_path``) to use a pre-built /
+      compiled :class:`AttackGenerator` instead of a fresh one.
     """
-
-    load_env()
-    attacker_lm = build_lm(config.attacker_lm)
-    judge_lm = build_lm(config.judge_lm)
-
-    report_cfg = config.report_judge_lm
-    if report_cfg is None or report_cfg.model == config.judge_lm.model:
-        report_judge_lm = judge_lm  # reuse -> not independent
-        logger.warning(
-            "report judge is not independent of the optimization judge (model {}); "
-            "reported ASR is subject to Goodhart. Set report_judge_lm to a different "
-            "model for a defensible number.", config.judge_lm.model)
-    else:
-        report_judge_lm = build_lm(report_cfg)
-
-    judge_lms = [build_lm(c) for c in config.judge_lms] if config.judge_lms else None
-    opt_judge = DivergenceJudge(votes=config.judge_votes,
-                                vote_temperature=config.judge_vote_temperature,
-                                lms=judge_lms)
-    if target is None:
-        target = build_target(config.agent, agent_fn, config.target_lm)
-
-    include_multi_agent = isinstance(target, MultiAgentSystem)
-    all_risks = build_risk_set(
-        domain=config.agent.domain,
-        include_multi_agent=include_multi_agent,
-        custom=custom_risks,
-    )
-    risks = select_risks(all_risks, config.risk_ids)
-    strategies = get_strategies(config.strategy_ids)
-
+    if attacker is None and config.attacker_path:
+        from .store import load_attacker
+        attacker = load_attacker(config.attacker_path)
+    ctx = build_run_context(config, agent_fn=agent_fn, target=target, custom_risks=custom_risks)
     engine = RedTeamEngine(
-        attacker_lm, judge_lm, judge=opt_judge, report_judge_lm=report_judge_lm,
+        ctx.attacker_lm, ctx.judge_lm, judge=ctx.opt_judge,
+        report_judge_lm=ctx.report_judge_lm, generator=attacker,
         max_escalation_turns=config.max_escalation_turns, progress=progress,
     )
-    return engine.run(config, target, risks, strategies, declared_intent)
+    return engine.run(config, ctx.target, ctx.risks, ctx.strategies, declared_intent)

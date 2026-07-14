@@ -36,6 +36,7 @@ from .engine import ProgressEvent, run_campaign
 from .eval_judge import evaluate_judge, load_judge_labels
 from .models import AgentSpec, CampaignConfig, LMConfig, RunRecord, RunStatus
 from .modules import DivergenceJudge
+from .optimize import run_optimization
 from .provenance import build_provenance
 from .report import to_markdown
 from .risks import GENERIC_RISKS, domain_risks, load_custom_risks
@@ -188,6 +189,34 @@ def eval_judge_cmd(
     if ev.disagreements:
         typer.echo(f"{len(ev.disagreements)} disagreement(s): "
                    + ", ".join(d["id"] for d in ev.disagreements))
+
+
+@app.command()
+def optimize(
+    config: Path = typer.Option(..., help="YAML campaign config."),
+    method: str = typer.Option("bootstrap", help="bootstrap | mipro | gepa"),
+    train_frac: float = typer.Option(0.6),
+    seeds: int = typer.Option(1),
+    save_id: str = typer.Option(None, "--out-attacker", help="Save compiled attacker under this id."),
+):
+    """Compile a stronger attacker and report the ASR lift (measured by the independent judge)."""
+    raw = yaml.safe_load(Path(config).read_text())
+    campaign = CampaignConfig(**raw)
+    res = run_optimization(campaign, method=method, train_frac=train_frac,
+                           seeds=seeds, save_id=save_id, progress=_progress)
+    typer.echo(f"method={res.method} seeds={res.seeds} train_frac={res.train_frac}")
+    for name in ("direct", "baseline", "compiled"):
+        a = res.arms[name]
+        typer.echo(f"  {name:<9} ASR={a['asr_mean']:.0%} +/- {a['asr_stdev']:.0%}  "
+                   f"mean_div={a['div_mean']:.2f}")
+    typer.echo(f"  J_opt-J_rep gap (reward-gaming): {res.opt_rep_gap:+.0%}")
+    if not res.held_out:
+        typer.echo("  WARNING: eval not held out (too few pairs) — ASR is on training pairs")
+    if not res.report_judge_independent:
+        typer.echo(f"  WARNING: report judge == optimization judge ({res.report_judge_model}); "
+                   "ASR is Goodhart-subject — set report_judge_lm to a different model")
+    if res.attacker_id:
+        typer.echo(f"  saved compiled attacker: {res.attacker_id}")
 
 
 @app.command()

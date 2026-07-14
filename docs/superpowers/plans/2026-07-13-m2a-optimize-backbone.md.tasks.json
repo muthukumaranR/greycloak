@@ -4,30 +4,30 @@
     {
       "id": 27,
       "subject": "M2a Task 1: build_run_context + attacker injection",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Extract run_campaign setup into build_run_context; run_campaign accepts a pre-built attacker.\n\n**Files:** engine.py (RunContext, build_run_context, run_campaign attacker=), models.py (CampaignConfig.attacker_path), tests/test_run_context.py\n\n**Acceptance Criteria:**\n- build_run_context -> RunContext(attacker_lm, judge_lm, report_judge_lm, opt_judge, target, risks, strategies)\n- run_campaign(attacker=) injection; unchanged when None\n- CampaignConfig.attacker_path\n\n**Verify:** uv run pytest tests/test_run_context.py tests/test_engine.py -q\n\n```json:metadata\n{\"files\": [\"src/greycloak/engine.py\", \"src/greycloak/models.py\", \"tests/test_run_context.py\"], \"verifyCommand\": \"uv run pytest tests/test_run_context.py tests/test_engine.py -q\", \"acceptanceCriteria\": [\"build_run_context populated\", \"attacker injection\", \"attacker_path field\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 28,
       "subject": "M2a Task 2: attacker persistence",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [27],
       "description": "**Goal:** save/load compiled AttackGenerator (DSPy .save/.load); run_campaign honors attacker_path.\n\n**Files:** store.py (save_attacker/load_attacker), engine.py (attacker_path load), tests/test_attacker_store.py\n\n**Acceptance Criteria:**\n- save_attacker/load_attacker roundtrip forwards under DummyLM\n- run_campaign loads config.attacker_path when no attacker passed\n\n**Verify:** uv run pytest tests/test_attacker_store.py -q\n\n```json:metadata\n{\"files\": [\"src/greycloak/store.py\", \"src/greycloak/engine.py\", \"tests/test_attacker_store.py\"], \"verifyCommand\": \"uv run pytest tests/test_attacker_store.py -q\", \"acceptanceCriteria\": [\"save/load roundtrip\", \"attacker_path loaded\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 29,
       "subject": "M2a Task 3: Direct baseline + measure_asr",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [27],
       "description": "**Goal:** No-LM Direct baseline + measure_asr over (risk,strategy) pairs + deterministic split_pairs.\n\n**Files:** baselines.py (DirectBaseline), optimize.py (split_pairs, build_examples_for_pairs, measure_asr), tests/test_baselines.py\n\n**Acceptance Criteria:**\n- DirectBaseline no-LM plain probe\n- measure_asr -> {asr, mean_divergence, n}\n- split_pairs deterministic, disjoint\n\n**Verify:** uv run pytest tests/test_baselines.py -q\n\n```json:metadata\n{\"files\": [\"src/greycloak/baselines.py\", \"src/greycloak/optimize.py\", \"tests/test_baselines.py\"], \"verifyCommand\": \"uv run pytest tests/test_baselines.py -q\", \"acceptanceCriteria\": [\"DirectBaseline no-LM\", \"measure_asr counts\", \"split_pairs deterministic\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 30,
       "subject": "M2a Task 4: optimize driver + CLI",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [28, 29],
       "description": "**Goal:** run_optimization (compile vs J_opt on train; report Direct/baseline/compiled ASR on eval via J_rep, mean±stdev over seeds, J_opt/J_rep gap, save attacker); greycloak optimize CLI + example.\n\n**Files:** optimize.py (OptimizationResult, run_optimization), cli.py (optimize), examples/optimize.py, tests/test_optimize_driver.py\n\n**Acceptance Criteria:**\n- run_optimization -> OptimizationResult arms {direct,baseline,compiled} + opt_rep_gap + attacker_id\n- compiled vs J_opt; reported ASR vs J_rep\n- optimize CLI prints comparison\n\n**Verify:** uv run pytest tests/test_optimize_driver.py -q\n\n```json:metadata\n{\"files\": [\"src/greycloak/optimize.py\", \"src/greycloak/cli.py\", \"examples/optimize.py\", \"tests/test_optimize_driver.py\"], \"verifyCommand\": \"uv run pytest tests/test_optimize_driver.py -q\", \"acceptanceCriteria\": [\"arms with mean+stdev\", \"compiled vs J_opt reported vs J_rep\", \"optimize CLI\"], \"modelTier\": \"standard\"}\n```"
     }
   ],
-  "lastUpdated": "2026-07-13T20:45:00Z"
+  "lastUpdated": "2026-07-14T09:30:00Z"
 }
