@@ -339,6 +339,10 @@ class LMConfig(BaseModel):
     api_key: str | None = None
     temperature: float = 0.7
     max_tokens: int = 1024
+    extra: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra kwargs forwarded to dspy.LM, for provider-specific "
+        "options (e.g. reasoning_effort for OpenAI reasoning models).")
 
 
 class CampaignConfig(BaseModel):

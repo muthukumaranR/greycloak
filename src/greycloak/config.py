@@ -52,6 +52,8 @@ def build_lm(cfg: LMConfig) -> dspy.LM:
     api_key = cfg.api_key or _default_key_for(cfg.model)
     if api_key:
         kwargs["api_key"] = api_key
+    if cfg.extra:
+        kwargs.update(cfg.extra)
     logger.debug("building LM model={} api_base={}", cfg.model, cfg.api_base)
     return dspy.LM(**kwargs)
 
